@@ -4,13 +4,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
-#include <strings.h>
+#include <string.h>
 
 #define SIZE 16
 
 char *expr();
 char *printOp(char op);
+char *newTemp();
 void printList();
+void exitLLVM();
+int contains(char identifier);
 
 typedef struct node
 {
@@ -116,6 +119,26 @@ char *lookup(char identifier)
     return NULL;
 }
 
+int isIdentifier(char identifier)
+{
+    node *temp = NULL;
+
+    // Identifier cannot exist in empty list.
+    if (variables == NULL || variables->tail == NULL)
+        return 0;
+
+    temp = variables->head;
+
+    while (temp != NULL)
+    {
+        if (temp->var == identifier)
+            return 1;
+
+        temp = temp->next;
+    }
+    return 0;
+}
+
 // Updates the lookahead char.
 void peek()
 {
@@ -176,6 +199,13 @@ void printLLVM(char var)
 
     tempToPrint = malloc(sizeof(char) * SIZE);
 
+    if (!contains(var))
+    {
+        fprintf(stderr, "error: use of undeclared variable %c\n", var);
+        exitLLVM();
+        exit(0);
+    }
+
     // Checks if there is one value passed into the program.
     if (temp == 0)
     {
@@ -183,9 +213,13 @@ void printLLVM(char var)
         temp++;
     }
 
+    // TODO: Load the value of temp onto a new variable, then print that one.
     strcpy(tempToPrint, lookup(var));
 
-    printf("  call void @print_integer(i32 %s)\n", tempToPrint);
+    consume();
+
+    printf("  %s = load i32, i32* %s\n", newTemp(), tempToPrint);
+    printf("  call void @print_integer(i32 %%t%d)\n\n", temp);
 }
 
 // Prints out the LLVM instruction for the operation we have to perform.
@@ -237,6 +271,8 @@ char *factor()
     num = malloc(sizeof(char) * 16);
     numG = malloc(sizeof(char) * 16);
 
+    // spaces();
+
     // Nested expression encountered.
     if (lookahead == '(')
     {
@@ -246,6 +282,7 @@ char *factor()
     }
     else if (isdigit(lookahead) || lookahead == '-')
     {
+        // printf("la: %c\n", lookahead);
         // Checks for negative numbers.
         if (lookahead == '-')
         {
@@ -265,40 +302,39 @@ char *factor()
         }
 
         num[i] = '\0';
-        
+        // printf("num in factor(): %s\n", num);
+
         strcpy(numG, num);
+        return numG;
     }
-    else if (isalpha(lookahead))
+    else if (isIdentifier(lookahead))
     {
-        // Consuming our variable character.
+        // printf("la: %c (supposed to be y)\n", lookahead);
         consume();
         identifier = token;
-
         spaces();
 
-        // Making sure that the variable name that we are trying
-        // to store to is before the operation that is being
-        // considered.
-        if (lookahead == '=' || lookahead == '+' || lookahead == '-' || lookahead == '*' || lookahead == '/' || lookahead == '%')
-        {
-            addr = lookup(identifier);
-            if (addr == NULL)
-                error();
+        // Checking to see if lookahead already exists in our linked list
+        addr = lookup(identifier);
 
-            // Loading the value of the variable into a new temporary variable.
-            result = newTemp();
-            printf("  %s = load i32, i32* %s\n", result, addr);
-            return result;
-        }
-        else
+        // A variable that doesn't exist is trying to be accessed, return error
+        // to avoid compiling problems.
+        if (addr == NULL)
         {
-            error();
+            fprintf(stderr, "error: use of undeclared variable %c\n", identifier);
+            exitLLVM();
+            exit(0);
         }
-        
+
+        result = newTemp();
+        printf("  %s = load i32, i32* %s\n", result, addr);
+        return result;
     }
     else
     {
-        error(); // invalid character
+        fprintf(stderr, "error: use of undeclared variable %c\n", lookahead);
+        exitLLVM();
+        exit(0);
     }
     return num;
 }
@@ -317,19 +353,26 @@ char *term()
     // NOTE: I was having issues here. Just leaving this as a
     //       reference for possible future problems.
     strcpy(left, factor());
-    while (lookahead == '*' || lookahead == '/' || lookahead == '%')
+    spaces();
+    // printf("lookahead: %c\n", lookahead);
+    while (lookahead == '*' || lookahead == '/' || lookahead == '%' || lookahead == '=')
     {
+        spaces();
+        if (lookahead == '=')
+            printf("%s\n", variables->head->addr);
         consume();
         operation = token;
         spaces();
         strcpy(right, factor());
+        spaces();
         strcpy(result, newTemp());
         printf("  %s = %s %s, %s\n", result, printOp(operation), left, right);
         strcpy(left, result);
     }
+
+    // printf("lookahead in term(): %c\n", lookahead);
     return left;
 }
-
 
 // Executes the expression with a loop.
 char *expr()
@@ -341,17 +384,22 @@ char *expr()
     right = malloc(sizeof(char) * 16);
     result = malloc(sizeof(char) * 16);
 
+    spaces();
     strcpy(left, term());
+
+    spaces();
+
     while (lookahead == '+' || lookahead == '-')
     {
         consume();
         operation = token;
         spaces();
         strcpy(right, term());
+        spaces();
         strcpy(result, newTemp());
         printf("  %s = %s %s, %s\n", result, printOp(operation), left, right);
         strcpy(left, result);
-        
+
     }
     return left;
 }
@@ -372,31 +420,8 @@ void semi()
 {
     // if (print)
     //     printLLVM();
-    if (lookahead == ';')
+    while (lookahead == ';' || lookahead == '\n')
         consume();
-    if (lookahead == '\n')
-        consume();
-}
-
-// Returns 1 if there is an integer delcaration.
-// Otherwise, returns 0.
-int intCheck()
-{
-    peek();
-    switch(lookahead)
-    {
-        case 'i':
-            consume();
-        case 'n':
-            consume();
-        case 't':
-            consume();
-            // printf("int declared!\n");
-            return 1;
-        default:
-            return 0;
-    }
-    return 0;
 }
 
 // Checks if the linked list already contains the identifier passed in.
@@ -441,41 +466,6 @@ void printList()
     printf("\n");
 }
 
-// Declares a variable by inserting it into our linked list..
-void declaration()
-{
-    char identifier;
-    char *result = NULL;
-
-    result = malloc(sizeof(char) * SIZE);
-
-    spaces();
-
-    if (isalpha(lookahead))
-    {
-        if (intCheck())
-        {
-            spaces();
-            // Gets identifier.
-            consume();
-            identifier = token;
-
-            consume(); // consumes semi colon
-
-            // Checking if identifier already exists in symbol table.
-            if (contains(identifier))
-                error();
-            
-            strcpy(result, newTemp());
-            // printList();
-            // printf("  ; \"int %c;\"\n", identifier);
-            printf("  %s = alloca i32\n\n", result);
-            tailInsert(identifier, result);
-        }
-    }
-    semi();
-}
-
 // Returns 1 if the beginning on the line started with 'read'.
 // Otherwise, returns 0.
 int readCheck()
@@ -484,12 +474,12 @@ int readCheck()
     switch (lookahead)
     {
         case 'r':
-            consume();
         case 'e':
-            consume();
         case 'a':
-            consume();
         case 'd':
+            consume();
+            consume();
+            consume();
             consume();
             return 1;
         default:
@@ -507,22 +497,27 @@ void read()
     addr = malloc(sizeof(char) * SIZE);
     result = malloc(sizeof(char) * SIZE);
 
-    if (readCheck())
+    spaces();
+    // Gets identifier.
+    consume();
+
+    identifier = token;
+
+    spaces();
+
+    // FIXME: segfaulting here (possible another error)
+    strcpy(addr, lookup(identifier));
+
+    if (addr == NULL)
     {
-        spaces();
-        // Gets identifier.
-        consume();
-        identifier = token;
-        consume(); // consumes semi colon
-
-        strcpy(addr, lookup(identifier));
-        if (addr == NULL)
-            error();
-
-        strcpy(result, newTemp());
-        printf("  %s = read_integer()\n", result);
-        printf("  store %s, %s\n", result, addr);
+        fprintf(stderr, "error: use of undeclared variable %c\n", identifier);
+        exitLLVM();
+        exit(0);
     }
+
+    strcpy(result, newTemp());
+    printf("  %s = call i32 @read_integer()\n", result);
+    printf("  store i32 %s, i32* %s\n\n", result, addr);
 }
 
 // Assigns values to variables that exist within our linked
@@ -535,43 +530,128 @@ void assign()
     addr = malloc(sizeof(char) * SIZE);
     result = malloc(sizeof(char) * SIZE);
 
-    // Gets identifier.
     consume();
     identifier = token;
     spaces();
 
-    consume(); // consumes equal sign
+    // printf("token: %c\n", token);
+
+    // Consumes equal sign.
+    consume();
     spaces();
 
+    // printf("514: token: %c\n", token);
+
+    // printf("lookahead: %c\n", lookahead);
+
     strcpy(result, expr());
-    consume(); // consumes semi colon
+
+    spaces();
+
+    // Consumes semi colon.
+    semi();
 
     strcpy(addr, lookup(identifier));
 
     if (addr == NULL)
-        error();
+    {
+        fprintf(stderr, "error: use of undeclared variable %c\n", identifier);
+        exitLLVM();
+        exit(0);
+    }
 
-    printf("  store i32 %s, i32* %s\n", result, addr);
+    printf("  store i32 %s, i32* %s\n\n", result, addr);
+}
+
+// Returns 1 if there is an integer delcaration.
+// Otherwise, returns 0.
+int declarationCheck()
+{
+    switch(lookahead)
+    {
+        case 'i':
+            consume();
+        case 'n':
+            consume();
+        case 't':
+            consume();
+            return 1;
+        default:
+            return 0;
+    }
+    return 0;
+}
+
+// Declares a variable by inserting it into our linked list.
+void declaration()
+{
+    char identifier;
+    char *result = NULL;
+
+    result = malloc(sizeof(char) * SIZE);
+
+    spaces();
+
+    // printf("la: %c\n", lookahead);
+    if (contains(lookahead))
+    {
+        fprintf(stderr, "error: multiple definitions of %c\n", lookahead);
+        exitLLVM();
+        exit(0);
+    }
+
+    if (isalpha(lookahead))
+    {
+            spaces();
+            // Gets identifier.
+            consume();
+            identifier = token;
+
+            consume(); // consumes semi colon
+
+            // Checking if identifier already exists in symbol table.
+            if (contains(identifier))
+                error();
+
+            strcpy(result, newTemp());
+            // printList();
+            // printf("  ; \"int %c;\"\n", identifier);
+            printf("  %s = alloca i32\n\n", result);
+            tailInsert(identifier, result);
+    }
+    semi();
 }
 
 // Depending on the value of printCheck(), we either print the
 // variable the SimpleC program is asking for, or computing an expression.
 void statement()
 {
-    if (printCheck())
+    spaces();
+    peek();
+    if (declarationCheck())
     {
-        spaces();
-        consume();
-        printLLVM(token); // var to print
-        consume(); // consumes semi colon
+        // printf("Going into declaration()...\n");
+        declaration();
     }
-    else
+    else if (isIdentifier(lookahead))
     {
+        // printf("Going into assign()...\n");
         assign();
     }
-    
+    else if (readCheck())
+    {
+        // printf("lookahead: %c\n", lookahead);
+        // printf("Going into read()...\n");
+        read();
+    }
+    else if (printCheck())
+    {
+        // printf("Going into print()...\n");
+        spaces();
+        printLLVM(lookahead);
+    }
     semi();
-    
+
     return;
 }
 
@@ -642,7 +722,7 @@ void boilerplate()
            "  call void @exit(i32 1) #5\n"
            "  unreachable\n"
            "}\n\n");
-    
+
     printf("define i32 @main() #0 {\n");
 }
 
@@ -672,17 +752,11 @@ int main(int argc, char **argv)
     {
         // Ensures we start at the very beginning of the file.
         ungetc(token, file);
-
-        peek();
-        if (lookahead == 'i')
-            declaration();
-        else if (lookahead == 'r')
-            read();
-        else
-            statement();
+        statement();
     }
 
     exitLLVM();
+    fclose(file);
 
     return 0;
 }
